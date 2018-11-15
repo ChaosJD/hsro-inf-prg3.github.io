@@ -1,10 +1,189 @@
 ---
-title: Generics, Pt. 2
+title: "Mixins, Pt. 2; Generics, Pt. 2"
 permalink: /05ln-generics-2/
 ---
 
+# Mixins, part two.
+
+[Last week](/04ln-generics-1/), we showed how we can use default methods in interfaces to augment classes by certain functionality:
+
+```java
+interface Escalatable {
+	String text();
+
+	default String escalate() {
+		return text().toUpperCase();
+	}
+}
+```
+```java
+class Message implements Escalatable {
+	private String t;
+	Message(String t) { this.t = t; }
+
+	public String text() { 
+		return t; 
+	}
+}
+```
+
+Conceptually, the difference between inheritance and mixins is that the latter are meaningless on its own and can be attached to otherwise unrelated classes.
+On the other hand, inheritance is used if there is a strong relation between the classes.
+
+The main issue with the above realization of mixins is the lack of _state_: since the iterfaces cannot have attributes, the only way to read/write data would be through (`public`) setters/getters.
+
+Let's get back to the above example; let's say, you want to gradually escalate your shouting.
+For example:
+
+```java
+Message m = new Message("hey");
+
+m.escalate();  // "HEY"
+m.escalate();  // "HEY!"
+m.escalate();  // "HEY!!"
+m.escalate();  // "HEY!!!"
+```
+
+This would require your `escalate` method to remember how often it was called, and add more bangs each time.
+Well fair enough, we'll use the same mechanis as for the `text`:
+
+```java
+interface Escalatable {
+	String text();   // to get the string
+	int howOften();  // implementing class must handle counting!
+	default String escalate() {
+		int n = howOften();
+
+		// n bangs in a row
+		String bangs = Stream.generate(() -> "!")
+				.limit(n)
+				.reduce("", (a, b) -> a + b);
+
+		return text + bangs;
+	}
+}
+```
+```java
+class Message implements Escalatable {
+	private String t;
+	Message(String t) { this.t = t; }
+
+	public String text() { return t; }
+
+	// counter
+	private int n = 0;
+	public int howOften() {
+		return n++;
+	}
+}
+```
+```java
+class App {
+	public static void main(String[] args) {
+		Message m = new Message("Hey");
+
+		m.escalate();  // "HEY"
+		m.escalate();  // "HEY!"
+		m.escalate();  // "HEY!!"
+		m.escalate();  // "HEY!!!"
+	}
+}
+```
+
+Sweet!
+But unfortunately, we require the implementation (and logic) of the `howOften` in the _class_ although it belongs to the _mixin_.
+What we need is a way for the mixin to store and retrieve its state with the object.
+This is where we can make use of inheritance and interfaces as well as generic methods.
+
+First, we specify an interface `Stateful`, that specifies generic methods to store and retrieve the state.
+We use the `Class` object as key to store the state information and provide an `initial` value for the get method.
+The generic method allows us to avoid casts from `Object` to our actual state object.
+
+```java
+interface Stateful {
+	<T> T getState(Class clazz, T initial);
+	<T> void setState(Class clazz, T state);
+}
+```
+
+Next, we create a `StatefulObject` that implements the `Stateful` interface, marking the methods `final` (since the mechanism is to be kept fixed).
+
+```java
+class StatefulObject implements Stateful {
+	// note: we store the state for each mixin as Object!
+	private HashMap<Class, Object> states
+			= new HashMap<>();
+
+	public final <T> T getState(Class clazz, T initial) {
+		// cast necessary, since internally we store Object!
+		return (T) states.getOrDefault(clazz, initial);
+	}
+
+	public final <T> void setState(Class clazz, T s) {
+		states.put(clazz, s);
+	}
+}
+```
+
+For our mixin, we now `extend` the `Stateful` interface to access the state:
+
+```java
+interface Escalatable extends Stateful {
+	String text();
+
+	default String escalated() {
+		// generics magic!
+		int n = getState(StatefulEscalate2.class, 0);
+		setState(StatefulEscalate2.class, n+1);
+
+		// generate n bangs, or empty strings for n=0
+		String bangs = Stream.generate(() -> "!")
+				.limit(n)
+				.reduce("", (a, b) -> a + b);
+
+		return text().toUpperCase() + bangs;
+	}
+}
+```
+
+For the actual class to attach the mixin to, we `extend StatefulObject`, since the mechanism to store and retrieve state is the same.
+
+```java
+public class StatefulMessage 
+		extends StatefulObject    // manages state
+		implements Escalatable {  // uses state
+	private String m;
+
+	public StatefulMessage(String m) { this.m = m; }
+
+	public String text() { return m; }
+}
+```
+
+```java
+class App {
+	public static void main(String[] args) {
+		StatefulMessage m1 = new StatefulMessage("Hans");
+		StatefulMessage m2 = new StatefulMessage("Dampf");
+
+		System.out.println(m1.escalated());  // HANS
+		System.out.println(m1.escalated());  // HANS!
+		System.out.println(m1.escalated());  // HANS!!
+		System.out.println(m2.escalated());  // DAMPF
+		System.out.println(m2.escalated());  // DAMPF!
+		System.out.println(m2.escalated());  // DAMPF!!
+	}
+}
+```
+
+This way, we utilize inheritance of classes (and interfaces) and generic methods, with relatively little impact on the overall class hierarchy:
+
+![Mixin Stateful](/assets/mixin-stateful.svg)
+
+
 # Generics and Inheritance
 
+Speaking of inheritance and generics.
 Recall a principal property of inheritance: an instance of a subclass (e.g. `java.lang.Integer`) can be assigned to a reference of the base class (e.g. `java.lang.Number`); the same holds for arrays:
 
 ```java
@@ -25,7 +204,8 @@ ArrayList<Integer> is = new ArrayList<>();
 as = is;  // compiler error: incompatible types!
 ```
 
-Which yields a compiler error, even if you try to type-cast it: 
+Which yields a compiler error, even if you try to type-cast it:
+
 > Incompatible types, required `ArrayList<Number>`, found `ArrayList<Integer>`.
 
 In other words: two instances of the same generic classes are unrelated, even if their type arguments are related.
